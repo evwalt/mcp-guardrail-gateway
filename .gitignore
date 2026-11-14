@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.db
+.env
+.pytest_cache/
+*.egg-info/
+.DS_Store
+
+# Local-only planning notes
+NEXT_STEPS.md
