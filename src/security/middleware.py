@@ -24,6 +24,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import socket
+import time
 from dataclasses import dataclass, field
 from typing import Iterable
 from urllib.parse import urlsplit
@@ -57,14 +58,26 @@ class AuthContext:
     claims: dict = field(default_factory=dict)
 
 
-def issue_token(user_id: str, secret: str, **extra_claims) -> str:
-    """Helper for tests/fixtures: mint an HS256 JWT. Never used in prod paths."""
-    payload = {"sub": user_id, **extra_claims}
+def issue_token(user_id: str, secret: str, *, expires_in: int = 3600, **extra_claims) -> str:
+    """Helper for tests/fixtures: mint an HS256 JWT. Never used in prod paths.
+
+    Always sets ``iat``/``exp`` so the token satisfies the required-claims check
+    in :func:`authenticate`. Pass a negative ``expires_in`` to mint an expired
+    token for tests.
+    """
+    now = int(time.time())
+    payload = {"sub": user_id, "iat": now, "exp": now + expires_in, **extra_claims}
     return jwt.encode(payload, secret, algorithm=JWT_ALGORITHM)
 
 
 def authenticate(authorization_header: str | None, secret: str) -> AuthContext:
-    """Verify a ``Bearer <jwt>`` header and return the bound identity."""
+    """Verify a ``Bearer <jwt>`` header and return the bound identity.
+
+    Hardened against algorithm-confusion and unbounded-lifetime tokens:
+    ``HS256`` is pinned (so an attacker cannot downgrade to ``none`` or trick
+    the server into verifying an RS256 token with the public key as an HMAC
+    secret), and both ``exp`` and ``sub`` are required and verified.
+    """
     if not authorization_header:
         raise SecurityError("missing Authorization header")
     parts = authorization_header.split(None, 1)
@@ -72,7 +85,16 @@ def authenticate(authorization_header: str | None, secret: str) -> AuthContext:
         raise SecurityError("malformed Authorization header")
     token = parts[1].strip()
     try:
-        claims = jwt.decode(token, secret, algorithms=[JWT_ALGORITHM])
+        claims = jwt.decode(
+            token,
+            secret,
+            algorithms=[JWT_ALGORITHM],  # pin HS256; reject 'none' and alg confusion
+            options={
+                "require": ["exp", "sub"],
+                "verify_exp": True,
+                "verify_signature": True,
+            },
+        )
     except jwt.InvalidTokenError as exc:
         raise SecurityError(f"invalid token: {exc}") from exc
     sub = claims.get("sub")
@@ -102,6 +124,16 @@ def enforce_user_id(auth: AuthContext, requested_user_id: str | None) -> str:
 
 
 def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    # Unwrap IPv6 forms that embed an IPv4 address, so an attacker cannot smuggle
+    # a private/metadata v4 target past the checks as `::ffff:169.254.169.254`,
+    # a 6to4 (`2002:a9fe:a9fe::`), or a Teredo address.
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        elif ip.sixtofour is not None:
+            ip = ip.sixtofour
+        elif ip.teredo is not None:
+            ip = ip.teredo[1]
     return (
         ip.is_private
         or ip.is_loopback
@@ -111,6 +143,24 @@ def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
         or ip.is_unspecified
         or (isinstance(ip, ipaddress.IPv6Address) and ip.is_site_local)
     )
+
+
+def _looks_like_encoded_ip(host: str) -> bool:
+    """True if ``host`` is an integer-encoded IPv4 (decimal/hex/octal).
+
+    ``http://2852039166/`` and ``http://0xA9FEA9FE/`` both resolve to
+    169.254.169.254 in most HTTP stacks but never appear as dotted quads, so a
+    naive dotted-quad check misses them. Any purely numeric host is suspect and
+    cannot be a legitimate allowlisted domain anyway.
+    """
+    for base in (10, 16, 8, 0):
+        try:
+            value = int(host, base)
+        except ValueError:
+            continue
+        if 0 <= value <= 0xFFFFFFFF:
+            return True
+    return False
 
 
 def _host_allowed(host: str) -> bool:
@@ -157,6 +207,10 @@ def validate_url(url: str, *, resolver=_resolve) -> str:
             raise SecurityError(f"blocked IP literal: {host}")
         # Literal IPs are never on the domain allowlist.
         raise SecurityError(f"host '{host}' not in domain allowlist")
+
+    # Integer-encoded IPs (decimal/hex/octal) never pass as dotted quads.
+    if _looks_like_encoded_ip(host):
+        raise SecurityError(f"integer-encoded IP host not allowed: {host}")
 
     if not _host_allowed(host):
         raise SecurityError(f"host '{host}' not in domain allowlist")

@@ -12,6 +12,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "mcp>=2.3",
+    "anyio>=4.0",
 ]
 
 [tool.pytest.ini_options]

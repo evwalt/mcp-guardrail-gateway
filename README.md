@@ -36,13 +36,42 @@ sanitization) — so they hold no matter what the model was convinced to attempt
 `src/gateway/secure_gateway.py` is the single choke point: every tool call goes
 through `SecureGateway.call`, which runs the controls when `secure_mode=True`.
 
+### Hardening detail
+
+The controls defend against the realistic bypasses, not just the obvious inputs:
+
+- **SSRF:** blocks IPv4-mapped IPv6 (`[::ffff:169.254.169.254]`),
+  integer-encoded IPs (decimal `2852039166`, hex `0xA9FEA9FE`), userinfo tricks
+  (`http://example.com@169.254.169.254/`), and never follows redirects. Hosts
+  are resolved and checked against private/loopback/link-local ranges, not
+  string-matched.
+- **JWT:** pins `algorithms=["HS256"]` (rejecting `alg:none` and RS/HS confusion)
+  and requires verified `exp` and `sub` claims.
+
+## MCP server
+
+`src/mcp_server/server.py` exposes both tools over the Model Context Protocol
+(stdio) using the `mcp` SDK, with every call routed through `SecureGateway`
+(`secure_mode=True`). The server binds to one authenticated identity at startup
+via environment variables, so an MCP client cannot spoof another tenant:
+
+```bash
+GATEWAY_JWT=<hs256-token> GATEWAY_JWT_SECRET=<secret> \
+  python -m src.mcp_server.server          # speaks MCP over stdio
+```
+
+`tests/test_mcp_protocol.py` spins up this server as a subprocess and drives it
+with a real MCP client over stdio, asserting a legitimate `user_101` call
+succeeds (boundary-tagged, secret redacted) while a `user_102` call from the
+same session is blocked by session binding.
+
 ## Run the red-team comparison in 30 seconds
 
 ```bash
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 python -m src.db.seed          # creates data/customers.db
-pytest -v                      # 42 tests: exploit-succeeds + blocked, per vector
+pytest -v                      # 56 tests: exploit-succeeds + blocked, per vector
 ```
 
 Every vector is proven **twice**: once with `secure_mode=False` asserting the
