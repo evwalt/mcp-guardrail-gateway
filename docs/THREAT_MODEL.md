@@ -1,4 +1,4 @@
-# Threat Model — MCP Guardrail Gateway
+# Threat Model: MCP Guardrail Gateway
 
 STRIDE threat model for an LLM agent that answers customer-support questions by
 calling two tools (`query_customer_records`, `fetch_external_doc`) against a
@@ -39,7 +39,7 @@ flowchart LR
     MW -->|"redact + boundary-tag (TB3)"| LLM
     LLM -->|answer| U
 
-    classDef tb fill:#fde,stroke:#b00,stroke-width:2px;
+    classDef tb fill:#ffe0ec,stroke:#b00,stroke-width:2px,color:#111827;
     class MW,GW tb;
 ```
 
