@@ -102,6 +102,15 @@ On every push and PR: `pytest` (red-team suite as a mandatory merge gate),
 **Semgrep** (`p/python`, `p/owasp-top-ten`, `p/secrets`), **Gitleaks**, and
 **pip-audit**.
 
+## Performance
+
+`python bench/overhead.py` measures the gateway's own cost per tool call, with
+`secure_mode` off vs. on (real SQLite query, stubbed fetch and DNS, 5,000 runs).
+On a 2017 dual-core Intel i5 laptop the controls add about 30-40 us (p50) per call,
+under 0.1 ms at p95; JWT verification (about 80 us) runs once per session. Real
+DNS resolution for the SSRF check adds network time, which the fetch itself
+would pay anyway.
+
 ## Architectural findings
 
 **Prompt-level guardrails and action-level guardrails are not substitutes.** The
